@@ -1,0 +1,966 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>VR 網頁瀏覽器 (視線停留選擇)</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Three.js CDN -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <!-- FontAwesome for icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
+
+  <style>
+    body, html {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background-color: #0b0f19;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    #canvas-container {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 10;
+    }
+    /* Reticle Gaze Progress Indicator */
+    .reticle-container {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      pointer-events: none;
+      z-index: 40;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .reticle-ring {
+      transition: stroke-dashoffset 0.05s linear;
+    }
+    /* VR Split Screen Dividers */
+    .vr-center-divider {
+      position: absolute;
+      top: 0;
+      left: 50%;
+      width: 2px;
+      height: 100%;
+      background: rgba(255, 255, 255, 0.2);
+      transform: translateX(-50%);
+      z-index: 35;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body class="text-white">
+
+  <!-- 3D WebGL Canvas Layer -->
+  <div id="canvas-container"></div>
+
+  <!-- Reticle Indicators (Supports Split View & Mono View) -->
+  <div id="reticle-mono" class="reticle-container">
+    <svg class="w-12 h-12" viewBox="0 0 100 100">
+      <circle cx="50" cy="50" r="40" stroke="rgba(255, 255, 255, 0.3)" stroke-width="6" fill="none" />
+      <circle id="gaze-circle-mono" class="reticle-ring" cx="50" cy="50" r="40" stroke="#38bdf8" stroke-width="6" fill="none"
+              stroke-dasharray="251.2" stroke-dashoffset="251.2" stroke-linecap="round" transform="rotate(-90 50 50)" />
+      <circle cx="50" cy="50" r="4" fill="#38bdf8" />
+    </svg>
+  </div>
+
+  <div id="reticles-stereo" class="hidden pointer-events-none">
+    <!-- Left Eye Reticle -->
+    <div class="reticle-container" style="left: 25%;">
+      <svg class="w-12 h-12" viewBox="0 0 100 100">
+        <circle cx="50" cy="50" r="40" stroke="rgba(255, 255, 255, 0.3)" stroke-width="6" fill="none" />
+        <circle id="gaze-circle-left" class="reticle-ring" cx="50" cy="50" r="40" stroke="#38bdf8" stroke-width="6" fill="none"
+                stroke-dasharray="251.2" stroke-dashoffset="251.2" stroke-linecap="round" transform="rotate(-90 50 50)" />
+        <circle cx="50" cy="50" r="4" fill="#38bdf8" />
+      </svg>
+    </div>
+    <!-- Right Eye Reticle -->
+    <div class="reticle-container" style="left: 75%;">
+      <svg class="w-12 h-12" viewBox="0 0 100 100">
+        <circle cx="50" cy="50" r="40" stroke="rgba(255, 255, 255, 0.3)" stroke-width="6" fill="none" />
+        <circle id="gaze-circle-right" class="reticle-ring" cx="50" cy="50" r="40" stroke="#38bdf8" stroke-width="6" fill="none"
+                stroke-dasharray="251.2" stroke-dashoffset="251.2" stroke-linecap="round" transform="rotate(-90 50 50)" />
+        <circle cx="50" cy="50" r="4" fill="#38bdf8" />
+      </svg>
+    </div>
+    <div class="vr-center-divider"></div>
+  </div>
+
+  <!-- Top Real-World Control HUD (For mobile/touch config before inserting to VR Box) -->
+  <div class="fixed top-3 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 bg-slate-900/85 backdrop-blur-md px-4 py-2 rounded-full border border-slate-700/80 shadow-2xl text-xs sm:text-sm">
+    <div class="flex items-center gap-1.5 text-sky-400 font-semibold pr-2 border-r border-slate-700">
+      <i class="fa-solid fa-vr-cardboard text-base"></i>
+      <span>VR 瀏覽器</span>
+    </div>
+
+    <!-- Toggle Mono / Stereo SBS -->
+    <button id="toggle-stereo-btn" class="px-3 py-1 bg-sky-600 hover:bg-sky-500 active:scale-95 transition rounded-full font-medium text-white flex items-center gap-1">
+      <i class="fa-solid fa-glasses"></i>
+      <span id="stereo-mode-label">切換雙眼 VR 分割</span>
+    </button>
+
+    <!-- Enable Gyroscope Button (Crucial for Android / iOS permission) -->
+    <button id="gyro-btn" class="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 active:scale-95 transition rounded-full font-medium text-white flex items-center gap-1">
+      <i class="fa-solid fa-compass"></i>
+      <span id="gyro-status">啟用陀螺儀頭部追蹤</span>
+    </button>
+
+    <!-- Dwell Time Selector -->
+    <div class="hidden sm:flex items-center gap-1 pl-2 border-l border-slate-700 text-slate-300">
+      <i class="fa-regular fa-clock"></i>
+      <span>凝視停留:</span>
+      <select id="dwell-time-select" class="bg-slate-800 text-sky-300 rounded px-1.5 py-0.5 outline-none border border-slate-700 cursor-pointer">
+        <option value="1200">1.2 秒 (快)</option>
+        <option value="1800" selected>1.8 秒 (適中)</option>
+        <option value="2500">2.5 秒 (防誤觸)</option>
+      </select>
+    </div>
+
+    <!-- Fullscreen -->
+    <button id="fs-btn" class="p-1.5 hover:text-sky-300 transition text-slate-300 ml-1" title="全螢幕">
+      <i class="fa-solid fa-expand"></i>
+    </button>
+  </div>
+
+  <!-- Bottom Instructions Toast -->
+  <div class="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 pointer-events-none bg-slate-900/90 border border-slate-700/80 px-4 py-2 rounded-2xl shadow-xl flex items-center gap-3 text-xs sm:text-sm text-slate-300 text-center max-w-[92vw]">
+    <i class="fa-solid fa-circle-info text-sky-400 text-base shrink-0"></i>
+    <span>移動手機或滑鼠轉向。將十字準心對準 3D 浮動面板上的按鈕或鍵盤，<strong>停留集氣</strong> 即可自動觸發點擊！</span>
+  </div>
+
+  <!-- Audio Context Synthesizer (Tone feedback without external files) -->
+  <script>
+    class SoundFX {
+      constructor() {
+        this.ctx = null;
+      }
+      init() {
+        if (!this.ctx) {
+          const AudioContext = window.AudioContext || window.webkitAudioContext;
+          if (AudioContext) this.ctx = new AudioContext();
+        }
+        if (this.ctx && this.ctx.state === 'suspended') {
+          this.ctx.resume();
+        }
+      }
+      playHover() {
+        if (!this.ctx) return;
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(440, this.ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(580, this.ctx.currentTime + 0.08);
+        gain.gain.setValueAtTime(0.04, this.ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.08);
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+        osc.start();
+        osc.stop(this.ctx.currentTime + 0.08);
+      }
+      playClick() {
+        if (!this.ctx) return;
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(520, this.ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(880, this.ctx.currentTime + 0.15);
+        gain.gain.setValueAtTime(0.12, this.ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.15);
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+        osc.start();
+        osc.stop(this.ctx.currentTime + 0.15);
+      }
+    }
+    const sfx = new SoundFX();
+  </script>
+
+  <!-- Main Three.js VR Engine & Gaze Dwell Logic -->
+  <script>
+    // --- Application State ---
+    let isStereo = false;
+    let dwellDuration = 1800; // ms
+    let gazeStartTime = 0;
+    let currentGazeTarget = null;
+    let hasGazeTriggered = false;
+
+    // Browser Virtual Navigation State
+    let currentUrl = "https://wiki.org/VR_Metaverse";
+    let browserHistory = [currentUrl];
+    let historyIndex = 0;
+    let zoomLevel = 1.0;
+    let scrollYOffset = 0;
+    let isKeyboardVisible = false;
+
+    // Web content database for high-performance 3D rendering
+    const siteDirectory = {
+      "https://wiki.org/VR_Metaverse": {
+        title: "虛擬實境 (VR) 與 沉浸式網頁技術 - 維基百科",
+        tag: "科技科普",
+        content: [
+          "虛擬實境 (Virtual Reality, VR) 是一種利用電腦模擬產生三維空間的虛擬世界，提供使用者視覺、聽覺等感官的模擬體驗。",
+          "在行動裝置 (如 Android Cardboard / Daydream) 上，配合陀螺儀 (Gyroscope) 與雙眼立體渲染 (Stereoscopic SBS)，能隨時將智慧型手機轉換為頭戴式顯示器。",
+          "【視線停留選擇 (Gaze Dwell Selection)】是用戶在無實體手把控制器時最直覺的輸入方式。藉由計算相機準心停留於目標物件的時長，配合動態環形進度條提示，無須手部按鍵即可執行超連結跳轉、滾動與文字輸入。"
+        ],
+        links: [
+          { text: "深入閱讀：WebXR 網頁標準", target: "https://w3c.org/WebXR" },
+          { text: "探索：太空天文觀測站", target: "https://space.org/Hubble" },
+          { text: "新聞熱點：智慧穿戴趨勢", target: "https://news.tech/ai-vr" }
+        ]
+      },
+      "https://w3c.org/WebXR": {
+        title: "W3C WebXR Device API 標準規格規範",
+        tag: "開發標準",
+        content: [
+          "WebXR Device API 提供了在網頁中存取 VR 與 AR 裝置硬體性能 (包括頭部姿態 6DoF/3DoF 追蹤、立體視差輸出及手勢控制器) 的標準架構。",
+          "WebXR 使得開發者不再需要打包繁複的客製原生套件，便能直接以 HTML5 Canvas、WebGL 與 Three.js 呈現高效能的立體虛擬實境網頁。",
+          "配合視線注視 (Raycasting Gaze) 演算法，網頁應用可建立極具無障礙特性的免控制器瀏覽環境。"
+        ],
+        links: [
+          { text: "← 返回主頁", target: "https://wiki.org/VR_Metaverse" },
+          { text: "太空天文觀測站", target: "https://space.org/Hubble" }
+        ]
+      },
+      "https://space.org/Hubble": {
+        title: "韋伯與哈伯太空望遠鏡 - 星系探索專題",
+        tag: "自然科學",
+        content: [
+          "深空觀測展現了數十億光年外的壯麗星雲與恆星誕生搖籃。",
+          "透過三維立體沉浸式視角，天文數據不再僅限於二維平面圖像。觀測者得以置身於銀河核心，體驗身歷其境的宇宙宏觀結構。",
+          "在 VR 瀏覽器模式下，可視角度達到 360 度環景，大幅拓展科學資料的傳播與教學展示。"
+        ],
+        links: [
+          { text: "← 回到首頁", target: "https://wiki.org/VR_Metaverse" },
+          { text: "新聞熱點：智慧穿戴趨勢", target: "https://news.tech/ai-vr" }
+        ]
+      },
+      "https://news.tech/ai-vr": {
+        title: "次世代穿戴裝置與沉浸式人機互動展望",
+        tag: "科技即時",
+        content: [
+          "隨著智慧型手機處理器 GPU 運算力躍升與高解析度 OLED 螢幕普及，在手機上實踐流暢 60FPS+ 的雙眼 VR 視角已成常態。",
+          "視線注視停留 (Gaze Dwell) 搭配聽覺音效反饋 (Audio Cues) 能顯著降低使用者的認知負擔，使 VR 網頁瀏覽更加自然愜意。"
+        ],
+        links: [
+          { text: "← 回到首頁", target: "https://wiki.org/VR_Metaverse" },
+          { text: "W3C WebXR 規範", target: "https://w3c.org/WebXR" }
+        ]
+      }
+    };
+
+    // --- Three.js Setup ---
+    const container = document.getElementById('canvas-container');
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x070b14);
+
+    // Camera rig for VR view control
+    const cameraRig = new THREE.Group();
+    scene.add(cameraRig);
+
+    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+    cameraRig.add(camera);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    container.appendChild(renderer.domElement);
+
+    // Add ambient galaxy dust & grid floor in VR world
+    const gridHelper = new THREE.GridHelper(60, 40, 0x38bdf8, 0x1e293b);
+    gridHelper.position.y = -3.5;
+    scene.add(gridHelper);
+
+    // Particle Stars
+    const starGeo = new THREE.BufferGeometry();
+    const starCount = 800;
+    const starPos = new Float32Array(starCount * 3);
+    for (let i = 0; i < starCount * 3; i += 3) {
+      starPos[i] = (Math.random() - 0.5) * 100;
+      starPos[i + 1] = Math.random() * 50 - 10;
+      starPos[i + 2] = (Math.random() - 0.5) * 100;
+    }
+    starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
+    const starMat = new THREE.PointsMaterial({ color: 0x64748b, size: 0.25, transparent: true, opacity: 0.8 });
+    const starMesh = new THREE.Points(starGeo, starMat);
+    scene.add(starMesh);
+
+    // Lighting
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.95);
+    scene.add(ambientLight);
+
+    // Raycaster for Gaze Detection
+    const raycaster = new THREE.Raycaster();
+    const centerVector = new THREE.Vector2(0, 0); // Always center of gaze
+    const gazeInteractables = []; // List of Meshes eligible for dwell click
+
+    // --- Dynamic Canvas Textures for Floating UI ---
+    // 1. Browser Screen Texture Canvas
+    const webCanvas = document.createElement('canvas');
+    webCanvas.width = 1024;
+    webCanvas.height = 768;
+    const webCtx = webCanvas.getContext('2d');
+    const webTexture = new THREE.CanvasTexture(webCanvas);
+
+    // 2. Control Toolbar Texture Canvas
+    const barCanvas = document.createElement('canvas');
+    barCanvas.width = 1024;
+    barCanvas.height = 128;
+    const barCtx = barCanvas.getContext('2d');
+    const barTexture = new THREE.CanvasTexture(barCanvas);
+
+    // 3. Virtual Keyboard Texture Canvas
+    const kbCanvas = document.createElement('canvas');
+    kbCanvas.width = 1024;
+    kbCanvas.height = 420;
+    const kbCtx = kbCanvas.getContext('2d');
+    const kbTexture = new THREE.CanvasTexture(kbCanvas);
+
+    // --- 3D Floating Browser Mesh Setup ---
+    const browserGroup = new THREE.Group();
+    browserGroup.position.set(0, 0, -4.2);
+    scene.add(browserGroup);
+
+    // Main Web Viewport Plane (Curved slightly for panoramic immersion)
+    const screenGeo = new THREE.CylinderGeometry(4.2, 4.2, 3.1, 40, 1, true, -Math.PI / 5, (2 * Math.PI) / 5);
+    screenGeo.scale(-1, 1, 1); // Turn inside out
+    const screenMat = new THREE.MeshBasicMaterial({ map: webTexture, side: THREE.DoubleSide });
+    const screenMesh = new THREE.Mesh(screenGeo, screenMat);
+    screenMesh.position.set(0, 0.4, 0);
+    browserGroup.add(screenMesh);
+
+    // Screen Bezel Backing
+    const bezelGeo = new THREE.CylinderGeometry(4.24, 4.24, 3.2, 40, 1, true, -Math.PI / 5 - 0.02, (2 * Math.PI) / 5 + 0.04);
+    bezelGeo.scale(-1, 1, 1);
+    const bezelMat = new THREE.MeshBasicMaterial({ color: 0x0f172a, side: THREE.DoubleSide });
+    const bezelMesh = new THREE.Mesh(bezelGeo, bezelMat);
+    bezelMesh.position.set(0, 0.4, 0.02);
+    browserGroup.add(bezelMesh);
+
+    // Interactive Button Hotspots (Invisible hitboxes in 3D that map to Toolbar and Virtual keyboard)
+    const buttonHotspots = new THREE.Group();
+    browserGroup.add(buttonHotspots);
+
+    // --- Render Web Page Canvas Function ---
+    let currentClickableLinks = []; // Screen coordinates for in-page link dwell targets
+
+    function renderBrowserScreen() {
+      const page = siteDirectory[currentUrl] || {
+        title: "未找到頁面 - 404",
+        tag: "錯誤",
+        content: ["您請求的網址不存在或無法連線。", "請使用上方工具列重新整理或輸入網址。"],
+        links: [{ text: "回到首頁", target: "https://wiki.org/VR_Metaverse" }]
+      };
+
+      // Background
+      webCtx.fillStyle = '#0f172a';
+      webCtx.fillRect(0, 0, webCanvas.width, webCanvas.height);
+
+      // Web App Header Bar
+      webCtx.fillStyle = '#1e293b';
+      webCtx.fillRect(0, 0, webCanvas.width, 90);
+
+      // Status indicator dots
+      webCtx.fillStyle = '#ef4444'; webCtx.beginPath(); webCtx.arc(36, 45, 9, 0, Math.PI * 2); webCtx.fill();
+      webCtx.fillStyle = '#eab308'; webCtx.beginPath(); webCtx.arc(64, 45, 9, 0, Math.PI * 2); webCtx.fill();
+      webCtx.fillStyle = '#22c55e'; webCtx.beginPath(); webCtx.arc(92, 45, 9, 0, Math.PI * 2); webCtx.fill();
+
+      // Location bar on canvas
+      webCtx.fillStyle = '#0b0f19';
+      webCtx.beginPath();
+      webCtx.roundRect(130, 22, 750, 48, 12);
+      webCtx.fill();
+      webCtx.strokeStyle = '#38bdf8';
+      webCtx.lineWidth = 1.5;
+      webCtx.stroke();
+
+      webCtx.fillStyle = '#38bdf8';
+      webCtx.font = 'bold 20px "Segoe UI", sans-serif';
+      webCtx.fillText('🔒 ' + currentUrl, 150, 53);
+
+      // Zoom Indicator
+      webCtx.fillStyle = '#94a3b8';
+      webCtx.font = '16px "Segoe UI", sans-serif';
+      webCtx.fillText(`縮放: ${Math.round(zoomLevel * 100)}%`, 900, 52);
+
+      // Page Title & Category Tag
+      webCtx.fillStyle = '#38bdf8';
+      webCtx.font = 'bold 16px "Segoe UI", sans-serif';
+      webCtx.fillText(`[ ${page.tag} ]`, 60, 145);
+
+      webCtx.fillStyle = '#f8fafc';
+      webCtx.font = `bold ${Math.round(30 * zoomLevel)}px "Segoe UI", sans-serif`;
+      webCtx.fillText(page.title, 60, 195);
+
+      // Separator line
+      webCtx.strokeStyle = '#334155';
+      webCtx.lineWidth = 2;
+      webCtx.beginPath();
+      webCtx.moveTo(60, 220);
+      webCtx.lineTo(960, 220);
+      webCtx.stroke();
+
+      // Content Paragraphs
+      let currentY = 265 - scrollYOffset;
+      webCtx.font = `${Math.round(20 * zoomLevel)}px "Segoe UI", sans-serif`;
+      webCtx.fillStyle = '#cbd5e1';
+
+      page.content.forEach((paragraph) => {
+        const words = paragraph;
+        let line = '';
+        const maxWidth = 880;
+
+        for (let n = 0; n < words.length; n++) {
+          const testLine = line + words[n];
+          const metrics = webCtx.measureText(testLine);
+          if (metrics.width > maxWidth && n > 0) {
+            if (currentY > 210 && currentY < 680) {
+              webCtx.fillText(line, 60, currentY);
+            }
+            line = words[n];
+            currentY += 34 * zoomLevel;
+          } else {
+            line = testLine;
+          }
+        }
+        if (currentY > 210 && currentY < 680) {
+          webCtx.fillText(line, 60, currentY);
+        }
+        currentY += 46 * zoomLevel;
+      });
+
+      // Hyperlinks Box
+      currentClickableLinks = [];
+      if (page.links && page.links.length > 0) {
+        currentY += 15;
+        if (currentY > 210 && currentY < 680) {
+          webCtx.fillStyle = '#38bdf8';
+          webCtx.font = 'bold 22px "Segoe UI", sans-serif';
+          webCtx.fillText('🔗 推薦連結 (停留視線前往)：', 60, currentY);
+        }
+        currentY += 40;
+
+        page.links.forEach((link, idx) => {
+          if (currentY > 200 && currentY < 720) {
+            // Draw link card
+            const boxY = currentY - 28;
+            webCtx.fillStyle = '#1e293b';
+            webCtx.beginPath();
+            webCtx.roundRect(60, boxY, 520, 48, 10);
+            webCtx.fill();
+            webCtx.strokeStyle = '#0284c7';
+            webCtx.lineWidth = 1.5;
+            webCtx.stroke();
+
+            webCtx.fillStyle = '#38bdf8';
+            webCtx.font = 'bold 20px "Segoe UI", sans-serif';
+            webCtx.fillText('👉 ' + link.text, 80, currentY + 4);
+
+            currentClickableLinks.push({
+              target: link.target,
+              rect: { x: 60, y: boxY, width: 520, height: 48 }
+            });
+          }
+          currentY += 60;
+        });
+      }
+
+      webTexture.needsUpdate = true;
+      rebuildWebScreenHitboxes();
+    }
+
+    // Interactive 3D Hitbox creator for Floating Web Hyperlinks
+    const linkHitboxes = [];
+    function rebuildWebScreenHitboxes() {
+      // Clear previous link hitboxes
+      linkHitboxes.forEach(mesh => {
+        browserGroup.remove(mesh);
+        const idx = gazeInteractables.indexOf(mesh);
+        if (idx !== -1) gazeInteractables.splice(idx, 1);
+        mesh.geometry.dispose();
+      });
+      linkHitboxes.length = 0;
+
+      currentClickableLinks.forEach((linkData) => {
+        // Map 2D pixel coordinates on cylinder surface to 3D position
+        const normalizedX = (linkData.rect.x + linkData.rect.width / 2) / webCanvas.width - 0.5;
+        const normalizedY = 0.5 - (linkData.rect.y + linkData.rect.height / 2) / webCanvas.height;
+
+        const theta = normalizedX * ((2 * Math.PI) / 5);
+        const radius = 4.15;
+        const posX = Math.sin(theta) * radius;
+        const posZ = -Math.cos(theta) * radius + 4.2;
+        const posY = 0.4 + normalizedY * 3.0;
+
+        const boxGeo = new THREE.PlaneGeometry(1.6, 0.22);
+        const boxMat = new THREE.MeshBasicMaterial({ visible: false, wireframe: true });
+        const hitMesh = new THREE.Mesh(boxGeo, boxMat);
+        hitMesh.position.set(posX, posY, posZ);
+        hitMesh.lookAt(0, posY, 0);
+
+        hitMesh.userData = {
+          name: 'Hyperlink',
+          action: () => navigateToUrl(linkData.target)
+        };
+
+        browserGroup.add(hitMesh);
+        linkHitboxes.push(hitMesh);
+        gazeInteractables.push(hitMesh);
+      });
+    }
+
+    // Navigation Logic
+    function navigateToUrl(url) {
+      if (url === currentUrl) return;
+      currentUrl = url;
+      scrollYOffset = 0;
+      if (historyIndex < browserHistory.length - 1) {
+        browserHistory = browserHistory.slice(0, historyIndex + 1);
+      }
+      browserHistory.push(url);
+      historyIndex = browserHistory.length - 1;
+      renderBrowserScreen();
+    }
+
+    // --- Floating Navigation Controls Toolbar (Bottom of Browser) ---
+    const navButtons = [
+      { id: 'back', label: '◀ 後退', x: -1.75 },
+      { id: 'forward', label: '前進 ▶', x: -1.05 },
+      { id: 'scrollUp', label: '▲ 向上滾動', x: -0.35 },
+      { id: 'scrollDown', label: '▼ 向下滾動', x: 0.35 },
+      { id: 'zoomIn', label: '🔍 放大', x: 1.05 },
+      { id: 'keyboard', label: '⌨ 網址鍵盤', x: 1.75 }
+    ];
+
+    navButtons.forEach(btn => {
+      // 3D Canvas Button
+      const btnGeo = new THREE.BoxGeometry(0.62, 0.26, 0.05);
+      const btnMat = new THREE.MeshStandardMaterial({
+        color: 0x1e293b,
+        roughness: 0.3,
+        metalness: 0.2
+      });
+      const btnMesh = new THREE.Mesh(btnGeo, btnMat);
+      btnMesh.position.set(btn.x, -1.35, 0);
+      browserGroup.add(btnMesh);
+
+      // Text Canvas for Button
+      const tCanvas = document.createElement('canvas');
+      tCanvas.width = 256;
+      tCanvas.height = 100;
+      const tCtx = tCanvas.getContext('2d');
+      tCtx.fillStyle = '#0284c7';
+      tCtx.fillRect(0, 0, 256, 100);
+      tCtx.fillStyle = '#ffffff';
+      tCtx.font = 'bold 36px "Segoe UI", sans-serif';
+      tCtx.textAlign = 'center';
+      tCtx.textBaseline = 'middle';
+      tCtx.fillText(btn.label, 128, 50);
+
+      const labelTexture = new THREE.CanvasTexture(tCanvas);
+      const labelMat = new THREE.MeshBasicMaterial({ map: labelTexture });
+      const labelGeo = new THREE.PlaneGeometry(0.6, 0.24);
+      const labelMesh = new THREE.Mesh(labelGeo, labelMat);
+      labelMesh.position.set(0, 0, 0.03);
+      btnMesh.add(labelMesh);
+
+      btnMesh.userData = {
+        name: btn.id,
+        defaultColor: 0x1e293b,
+        highlightColor: 0x0284c7,
+        action: () => handleToolbarAction(btn.id)
+      };
+
+      gazeInteractables.push(btnMesh);
+    });
+
+    function handleToolbarAction(id) {
+      if (id === 'back') {
+        if (historyIndex > 0) {
+          historyIndex--;
+          currentUrl = browserHistory[historyIndex];
+          scrollYOffset = 0;
+          renderBrowserScreen();
+        }
+      } else if (id === 'forward') {
+        if (historyIndex < browserHistory.length - 1) {
+          historyIndex++;
+          currentUrl = browserHistory[historyIndex];
+          scrollYOffset = 0;
+          renderBrowserScreen();
+        }
+      } else if (id === 'scrollUp') {
+        scrollYOffset = Math.max(0, scrollYOffset - 120);
+        renderBrowserScreen();
+      } else if (id === 'scrollDown') {
+        scrollYOffset = Math.min(360, scrollYOffset + 120);
+        renderBrowserScreen();
+      } else if (id === 'zoomIn') {
+        zoomLevel = zoomLevel >= 1.3 ? 0.9 : zoomLevel + 0.15;
+        renderBrowserScreen();
+      } else if (id === 'keyboard') {
+        toggleVirtualKeyboard();
+      }
+    }
+
+    // --- Floating Virtual VR Keyboard ---
+    const kbGroup = new THREE.Group();
+    kbGroup.position.set(0, -2.1, 0.2);
+    kbGroup.rotation.x = -0.35; // angled up for natural gaze
+    kbGroup.visible = false;
+    browserGroup.add(kbGroup);
+
+    // Keyboard Backdrop
+    const kbBackdropGeo = new THREE.PlaneGeometry(3.6, 1.4);
+    const kbBackdropMat = new THREE.MeshBasicMaterial({ color: 0x0b132b, transparent: true, opacity: 0.95 });
+    const kbBackdrop = new THREE.Mesh(kbBackdropGeo, kbBackdropMat);
+    kbGroup.add(kbBackdrop);
+
+    // Keyboard Key Layout
+    const keyboardLayout = [
+      ['W3C', 'WIKI', 'SPACE', 'NEWS'],
+      ['HTTP', '.ORG', '.COM', 'ENTER']
+    ];
+
+    const keyboardHitboxes = [];
+    keyboardLayout.forEach((row, rIdx) => {
+      row.forEach((key, cIdx) => {
+        const kGeo = new THREE.BoxGeometry(0.78, 0.42, 0.05);
+        const kMat = new THREE.MeshStandardMaterial({ color: 0x1e293b });
+        const kMesh = new THREE.Mesh(kGeo, kMat);
+        const posX = -1.35 + cIdx * 0.9;
+        const posY = 0.3 - rIdx * 0.55;
+        kMesh.position.set(posX, posY, 0.03);
+        kbGroup.add(kMesh);
+
+        // Key Text
+        const kCan = document.createElement('canvas');
+        kCan.width = 200;
+        kCan.height = 100;
+        const kCtx = kCan.getContext('2d');
+        kCtx.fillStyle = '#0f172a';
+        kCtx.fillRect(0, 0, 200, 100);
+        kCtx.fillStyle = '#38bdf8';
+        kCtx.font = 'bold 36px "Segoe UI", sans-serif';
+        kCtx.textAlign = 'center';
+        kCtx.textBaseline = 'middle';
+        kCtx.fillText(key, 100, 50);
+
+        const kTex = new THREE.CanvasTexture(kCan);
+        const kLabel = new THREE.Mesh(new THREE.PlaneGeometry(0.74, 0.38), new THREE.MeshBasicMaterial({ map: kTex }));
+        kLabel.position.set(0, 0, 0.03);
+        kMesh.add(kLabel);
+
+        kMesh.userData = {
+          name: 'key_' + key,
+          defaultColor: 0x1e293b,
+          highlightColor: 0x38bdf8,
+          action: () => handleKeyboardInput(key)
+        };
+        keyboardHitboxes.push(kMesh);
+      });
+    });
+
+    function toggleVirtualKeyboard() {
+      isKeyboardVisible = !isKeyboardVisible;
+      kbGroup.visible = isKeyboardVisible;
+      keyboardHitboxes.forEach(k => {
+        const index = gazeInteractables.indexOf(k);
+        if (isKeyboardVisible && index === -1) {
+          gazeInteractables.push(k);
+        } else if (!isKeyboardVisible && index !== -1) {
+          gazeInteractables.splice(index, 1);
+        }
+      });
+    }
+
+    function handleKeyboardInput(key) {
+      if (key === 'WIKI') navigateToUrl("https://wiki.org/VR_Metaverse");
+      else if (key === 'W3C') navigateToUrl("https://w3c.org/WebXR");
+      else if (key === 'SPACE') navigateToUrl("https://space.org/Hubble");
+      else if (key === 'NEWS') navigateToUrl("https://news.tech/ai-vr");
+      else if (key === 'ENTER') toggleVirtualKeyboard();
+    }
+
+    // Initialize initial web page render
+    renderBrowserScreen();
+
+    // --- Device Orientation / Gyroscope Controls for Android Cardboard ---
+    let useGyro = false;
+    let deviceOrientation = {};
+    let initialAlpha = 0;
+
+    function handleOrientation(event) {
+      if (!useGyro) return;
+      if (!initialAlpha && event.alpha !== null) {
+        initialAlpha = event.alpha;
+      }
+      deviceOrientation = event;
+
+      // Cardboard Landscape orientation mapping
+      const alpha = THREE.MathUtils.degToRad(event.alpha ? event.alpha - initialAlpha : 0);
+      const beta = THREE.MathUtils.degToRad(event.beta || 0);
+      const gamma = THREE.MathUtils.degToRad(event.gamma || 0);
+
+      // Orientation Euler to Quaternion conversion
+      const euler = new THREE.Euler(beta - Math.PI / 2, alpha, -gamma, 'YXZ');
+      camera.quaternion.setFromEuler(euler);
+    }
+
+    const gyroBtn = document.getElementById('gyro-btn');
+    gyroBtn.addEventListener('click', () => {
+      sfx.init();
+      if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+        // iOS 13+ devices
+        DeviceOrientationEvent.requestPermission().then(response => {
+          if (response === 'granted') {
+            enableOrientationTracking();
+          }
+        }).catch(console.error);
+      } else {
+        // Android / Standard browsers
+        enableOrientationTracking();
+      }
+    });
+
+    function enableOrientationTracking() {
+      useGyro = true;
+      window.addEventListener('deviceorientation', handleOrientation, true);
+      document.getElementById('gyro-status').innerText = '陀螺儀已啟用 (頭部轉動已同步)';
+      gyroBtn.classList.remove('bg-emerald-600', 'hover:bg-emerald-500');
+      gyroBtn.classList.add('bg-sky-600');
+    }
+
+    // Mouse / Touch Look Around for Desktop & Testing
+    let isPointerDown = false;
+    let pointerStartX = 0, pointerStartY = 0;
+    let lon = 0, lat = 0;
+
+    window.addEventListener('mousedown', (e) => {
+      sfx.init();
+      isPointerDown = true;
+      pointerStartX = e.clientX;
+      pointerStartY = e.clientY;
+    });
+
+    window.addEventListener('mousemove', (e) => {
+      if (!isPointerDown || useGyro) return;
+      lon = (pointerStartX - e.clientX) * 0.15;
+      lat = (e.clientY - pointerStartY) * 0.15;
+      camera.rotation.y += lon * 0.015;
+      camera.rotation.x = Math.max(-Math.PI / 3, Math.min(Math.PI / 3, camera.rotation.x + lat * 0.015));
+      pointerStartX = e.clientX;
+      pointerStartY = e.clientY;
+    });
+
+    window.addEventListener('mouseup', () => { isPointerDown = false; });
+
+    // Touch dragging
+    window.addEventListener('touchstart', (e) => {
+      sfx.init();
+      if (e.touches.length === 1 && !useGyro) {
+        isPointerDown = true;
+        pointerStartX = e.touches[0].clientX;
+        pointerStartY = e.touches[0].clientY;
+      }
+    }, { passive: true });
+
+    window.addEventListener('touchmove', (e) => {
+      if (!isPointerDown || useGyro || e.touches.length !== 1) return;
+      lon = (pointerStartX - e.touches[0].clientX) * 0.2;
+      lat = (e.touches[0].clientY - pointerStartY) * 0.2;
+      camera.rotation.y += lon * 0.015;
+      camera.rotation.x = Math.max(-Math.PI / 3, Math.min(Math.PI / 3, camera.rotation.x + lat * 0.015));
+      pointerStartX = e.touches[0].clientX;
+      pointerStartY = e.touches[0].clientY;
+    }, { passive: true });
+
+    window.addEventListener('touchend', () => { isPointerDown = false; });
+
+    // --- Stereo SBS / Mono VR Mode Toggling ---
+    const stereoBtn = document.getElementById('toggle-stereo-btn');
+    const stereoLabel = document.getElementById('stereo-mode-label');
+    const reticleMono = document.getElementById('reticle-mono');
+    const reticlesStereo = document.getElementById('reticles-stereo');
+
+    stereoBtn.addEventListener('click', () => {
+      sfx.init();
+      isStereo = !isStereo;
+      if (isStereo) {
+        stereoLabel.innerText = "切換回單鏡頭全覽";
+        reticleMono.classList.add('hidden');
+        reticlesStereo.classList.remove('hidden');
+        // Request fullscreen for immersive Cardboard experience
+        if (document.documentElement.requestFullscreen) {
+          document.documentElement.requestFullscreen().catch(() => {});
+        }
+      } else {
+        stereoLabel.innerText = "切換雙眼 VR 分割";
+        reticleMono.classList.remove('hidden');
+        reticlesStereo.classList.add('hidden');
+      }
+      renderer.setScissorTest(isStereo);
+      onWindowResize();
+    });
+
+    // Dwell Time selector
+    const dwellSelect = document.getElementById('dwell-time-select');
+    dwellSelect.addEventListener('change', (e) => {
+      dwellDuration = parseInt(e.target.value, 10);
+    });
+
+    // Fullscreen toggle
+    document.getElementById('fs-btn').addEventListener('click', () => {
+      if (!document.fullscreenElement) {
+        document.documentElement.requestFullscreen().catch(() => {});
+      } else {
+        document.exitFullscreen().catch(() => {});
+      }
+    });
+
+    // --- Gaze Dwell Reticle Animation & Raycast Tick ---
+    const circleMono = document.getElementById('gaze-circle-mono');
+    const circleLeft = document.getElementById('gaze-circle-left');
+    const circleRight = document.getElementById('gaze-circle-right');
+    const circumference = 251.2; // 2 * PI * 40
+
+    function updateReticleProgress(progress) {
+      const offset = circumference - (circumference * Math.max(0, Math.min(1, progress)));
+      circleMono.style.strokeDashoffset = offset;
+      circleLeft.style.strokeDashoffset = offset;
+      circleRight.style.strokeDashoffset = offset;
+    }
+
+    function updateGazeRaycast() {
+      // Raycast from camera center forward
+      raycaster.setFromCamera(centerVector, camera);
+      const intersects = raycaster.intersectObjects(gazeInteractables, false);
+
+      if (intersects.length > 0) {
+        const hitTarget = intersects[0].object;
+
+        if (currentGazeTarget !== hitTarget) {
+          // New target acquired
+          currentGazeTarget = hitTarget;
+          gazeStartTime = performance.now();
+          hasGazeTriggered = false;
+          sfx.playHover();
+
+          if (hitTarget.material && hitTarget.userData.highlightColor) {
+            hitTarget.material.color.setHex(hitTarget.userData.highlightColor);
+          }
+        } else {
+          // Continuously dwelling on target
+          if (!hasGazeTriggered) {
+            const elapsed = performance.now() - gazeStartTime;
+            const progress = elapsed / dwellDuration;
+            updateReticleProgress(progress);
+
+            if (elapsed >= dwellDuration) {
+              // Trigger dwell click!
+              hasGazeTriggered = true;
+              sfx.playClick();
+              updateReticleProgress(1.0);
+
+              // Visual feedback pulse
+              if (hitTarget.material) {
+                hitTarget.material.color.setHex(0x22c55e); // Green success
+                setTimeout(() => {
+                  if (hitTarget.material && hitTarget.userData.defaultColor) {
+                    hitTarget.material.color.setHex(hitTarget.userData.defaultColor);
+                  }
+                }, 300);
+              }
+
+              // Fire mapped action
+              if (typeof hitTarget.userData.action === 'function') {
+                hitTarget.userData.action();
+              }
+            }
+          }
+        }
+      } else {
+        // Gaze lost or looking at blank space
+        if (currentGazeTarget) {
+          if (currentGazeTarget.material && currentGazeTarget.userData.defaultColor) {
+            currentGazeTarget.material.color.setHex(currentGazeTarget.userData.defaultColor);
+          }
+        }
+        currentGazeTarget = null;
+        hasGazeTriggered = false;
+        updateReticleProgress(0);
+      }
+    }
+
+    // --- Resize & Dual-Eye Stereoscopic Viewport Rendering ---
+    function onWindowResize() {
+      const width = window.innerWidth;
+      const height = window.innerHeight;
+      renderer.setSize(width, height);
+      camera.aspect = width / height;
+      camera.updateProjectionMatrix();
+    }
+    window.addEventListener('resize', onWindowResize);
+
+    // Main Animation Loop
+    function animate() {
+      requestAnimationFrame(animate);
+
+      // Check gaze dwell selection
+      updateGazeRaycast();
+
+      // Gentle floating animation for background elements
+      starMesh.rotation.y += 0.0003;
+
+      if (!isStereo) {
+        // Normal 2D Single Viewport
+        renderer.setScissorTest(false);
+        renderer.setViewport(0, 0, window.innerWidth, window.innerHeight);
+        renderer.render(scene, camera);
+      } else {
+        // Dual Stereoscopic SBS (Side-By-Side) Cardboard Rendering
+        const width = window.innerWidth;
+        const height = window.innerHeight;
+        const halfWidth = width / 2;
+        renderer.setScissorTest(true);
+
+        const eyeSeparation = 0.064; // Standard IPD ~64mm
+
+        // Left Eye Viewport
+        renderer.setScissor(0, 0, halfWidth, height);
+        renderer.setViewport(0, 0, halfWidth, height);
+        camera.aspect = halfWidth / height;
+        camera.updateProjectionMatrix();
+        camera.position.x = -eyeSeparation / 2;
+        renderer.render(scene, camera);
+
+        // Right Eye Viewport
+        renderer.setScissor(halfWidth, 0, halfWidth, height);
+        renderer.setViewport(halfWidth, 0, halfWidth, height);
+        camera.aspect = halfWidth / height;
+        camera.updateProjectionMatrix();
+        camera.position.x = eyeSeparation / 2;
+        renderer.render(scene, camera);
+
+        // Reset camera offset
+        camera.position.x = 0;
+      }
+    }
+
+    // Ensure loop starts properly on window load
+    window.onload = function () {
+      animate();
+    };
+  </script>
+</body>
+</html>
